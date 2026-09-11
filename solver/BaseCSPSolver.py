@@ -1,3 +1,4 @@
+import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import List, Optional, Dict, Set
@@ -24,7 +25,15 @@ class CSPStats:
         self.time_taken = 0.0
         self.solution_found = False
 
+
 class CSPSolver(ABC):
+    """Shared state for the solvers.
+
+    The CSP has one variable per position in the equation, the domain of every
+    variable is the set of input characters, and each character may be used only as
+    often as it appears in the input. `available` tracks which of the input characters
+    have not been placed yet.
+    """
 
     def __init__(self, chars: List[str]):
         self.chars = chars
@@ -53,9 +62,22 @@ class CSPSolver(ABC):
         self._initialize_domains()
         self.stats.reset()
 
+    def _start_solve(self, timeout: Optional[float]):
+        self.reset_state()
+        self.start_time = time.time()
+        self.timeout = timeout
+        self.timed_out = False
+
+    def _is_timed_out(self) -> bool:
+        """Report whether the time budget is used up, remembering it once it is."""
+        if self.timeout is not None and time.time() - self.start_time > self.timeout:
+            self.timed_out = True
+            return True
+        return False
+
     @abstractmethod
-    def solve(self) -> Optional[str]:
-        pass
+    def solve(self, timeout: Optional[float] = None) -> Optional[str]:
+        """Return an equation using every input character once, or None if there is none."""
 
     def get_stats(self) -> CSPStats:
         return self.stats

@@ -5,6 +5,10 @@ from solver.BaseCSPSolver import CSPSolver
 
 
 class OptimizedCSPSolver(CSPSolver):
+    """Backtracking with the usual CSP improvements: MRV, LCV and constraint propagation.
+
+    The individual techniques can be switched off to see what each one contributes.
+    """
 
     def __init__(self, chars: List[str]):
         super().__init__(chars)
@@ -13,16 +17,12 @@ class OptimizedCSPSolver(CSPSolver):
         self.use_mrv = True
         self.use_lcv = True
 
-    def solve(self, timeout: float = None) -> Optional[str]:
-        self.reset_state()
-        self.start_time = time.time()
-        self.timeout = timeout
-        self.timed_out = False
+    def solve(self, timeout: Optional[float] = None) -> Optional[str]:
+        self._start_solve(timeout)
 
-        if self.use_ac2:
-            if not self._initial_constraint_propagation():
-                self.stats.time_taken = time.time() - self.start_time
-                return None
+        if self.use_ac2 and not self._initial_constraint_propagation():
+            self.stats.time_taken = time.time() - self.start_time
+            return None
 
         result = self._backtrack()
 
@@ -32,11 +32,12 @@ class OptimizedCSPSolver(CSPSolver):
         return result
 
     def _initial_constraint_propagation(self) -> bool:
+        """Apply the position constraints once, before the search starts."""
+        self.stats.arc_consistency_calls += 1
+
         for pos in range(self.n):
-            valid_chars = set()
-            for char in self.domains[pos]:
-                if self._can_place_char_at_position(pos, char):
-                    valid_chars.add(char)
+            valid_chars = {char for char in self.domains[pos]
+                           if self._can_place_char_at_position(pos, char)}
 
             if not valid_chars:
                 return False
@@ -48,41 +49,29 @@ class OptimizedCSPSolver(CSPSolver):
         return True
 
     def _can_place_char_at_position(self, pos: int, char: str) -> bool:
-        if pos == 0 and not char.isdigit():
-            return False
-        if pos == self.n - 1 and not char.isdigit():
-            return False
-
-        if char == '=' and (pos == 0 or pos == self.n - 1):
-            return False
-
+        """Constraint that depends on the position alone: an equation starts and ends
+        with a digit."""
+        if pos == 0 or pos == self.n - 1:
+            return char.isdigit()
         return True
 
     def _backtrack(self) -> Optional[str]:
-        if self.timeout and (time.time() - self.start_time > self.timeout):
-            self.timed_out = True
+        if self._is_timed_out():
             return None
 
         self.stats.nodes_expanded += 1
 
-        if all(self.assignment[i] is not None for i in range(self.n)):
-            equation = ''.join([c for c in self.assignment if c is not None])
-            if self.validator.is_valid_equation(equation):
-                return equation
-            return None
+        if None not in self.assignment:
+            equation = ''.join(self.assignment)
+            return equation if self.validator.is_valid_equation(equation) else None
 
         pos = self._select_variable()
         if pos == -1:
             return None
 
-        ordered_values = self._order_domain_values(pos)
-
-        for char in ordered_values:
+        for char in self._order_domain_values(pos):
             char_idx = self._find_available_char_index(char)
             if char_idx == -1:
-                continue
-
-            if not self.validator.is_valid_partial_assignment(self.assignment, pos, char):
                 continue
 
             old_domains = self._save_domains()
@@ -104,51 +93,38 @@ class OptimizedCSPSolver(CSPSolver):
         return None
 
     def _select_variable(self) -> int:
-        if not self.use_mrv:
-            for i in range(self.n):
-                if self.assignment[i] is None:
-                    return i
-            return -1
-
-        unassigned = [i for i in range(self.n) if self.assignment[i] is None]
+        """Pick the next position to fill, preferring the most constrained one (MRV)."""
+        unassigned = [pos for pos in range(self.n) if self.assignment[pos] is None]
         if not unassigned:
             return -1
 
-        def get_real_domain_size(position):
-            count = 0
-            for char in self.domains[position]:
-                if (self._find_available_char_index(char) != -1 and
-                        self.validator.is_valid_partial_assignment(self.assignment, position, char)):
-                    count += 1
-            return count
+        if not self.use_mrv:
+            return unassigned[0]
 
-        min_domain_size = float('inf')
-        best_pos = -1
-
-        for pos in unassigned:
-            domain_size = get_real_domain_size(pos)
-            if domain_size < min_domain_size:
-                min_domain_size = domain_size
-                best_pos = pos
-
-        return best_pos
+        return min(unassigned, key=lambda pos: len(self._candidates(pos)))
 
     def _order_domain_values(self, pos: int) -> List[str]:
+        """Order the values for a position, least constraining first (LCV).
+
+        The candidates are sorted first so that a run does not depend on the iteration
+        order of the domain set, which keeps the benchmark numbers reproducible.
+        """
+        candidates = sorted(self._candidates(pos))
+
         if not self.use_lcv:
-            return [char for char in self.domains[pos]
-                    if self._find_available_char_index(char) != -1]
+            return candidates
 
-        valid_values = []
-        for char in self.domains[pos]:
-            if (self._find_available_char_index(char) != -1 and
-                    self.validator.is_valid_partial_assignment(self.assignment, pos, char)):
-                remaining_choices = self._count_remaining_choices(pos, char)
-                valid_values.append((char, remaining_choices))
+        return sorted(candidates, key=lambda char: self._count_remaining_choices(pos, char),
+                      reverse=True)
 
-        valid_values.sort(key=lambda x: x[1], reverse=True)
-        return [char for char, _ in valid_values]
+    def _candidates(self, pos: int) -> List[str]:
+        """The characters that are still free and allowed at `pos`."""
+        return [char for char in self.domains[pos]
+                if self._find_available_char_index(char) != -1 and
+                self.validator.is_valid_partial_assignment(self.assignment, pos, char)]
 
     def _count_remaining_choices(self, pos: int, char: str) -> int:
+        """Count the values left for the other positions if `char` were placed at `pos`."""
         char_idx = self._find_available_char_index(char)
         if char_idx == -1:
             return 0
@@ -159,13 +135,9 @@ class OptimizedCSPSolver(CSPSolver):
         self.assignment[pos] = char
         self.available[char_idx] = False
 
-        total_choices = 0
-        for other_pos in range(self.n):
-            if self.assignment[other_pos] is None and other_pos != pos:
-                for other_char in self.domains[other_pos]:
-                    if (self._find_available_char_index(other_char) != -1 and
-                            self.validator.is_valid_partial_assignment(self.assignment, other_pos, other_char)):
-                        total_choices += 1
+        total_choices = sum(len(self._candidates(other_pos))
+                            for other_pos in range(self.n)
+                            if other_pos != pos and self.assignment[other_pos] is None)
 
         self.assignment[pos] = old_assignment
         self.available[char_idx] = old_available
@@ -173,53 +145,43 @@ class OptimizedCSPSolver(CSPSolver):
         return total_choices
 
     def _propagate_constraints(self) -> bool:
+        """Prune the domains of the unassigned positions after an assignment.
+
+        Forward checking and arc consistency come down to the same pass in this model:
+        every constraint links a position to its neighbours only, so once the values
+        that no longer fit have been dropped the remaining domains are already arc
+        consistent and a second pass cannot remove anything. The pass therefore runs
+        once here, and arc consistency does its own useful work as preprocessing in
+        _initial_constraint_propagation().
+        """
         if self.use_forward_checking:
-            if not self._forward_check():
-                return False
+            self.stats.forward_checks += 1
+            return self._prune_domains()
 
         if self.use_ac2:
-            if not self._arc_consistency_check():
+            self.stats.arc_consistency_calls += 1
+            return self._prune_domains()
+
+        return True
+
+    def _prune_domains(self) -> bool:
+        """Narrow every unassigned domain to its remaining candidates.
+
+        Returns False on a domain wipeout, meaning some position has no value left and
+        the current partial assignment cannot be extended.
+        """
+        for pos in range(self.n):
+            if self.assignment[pos] is not None:
+                continue
+
+            valid_chars = set(self._candidates(pos))
+
+            if not valid_chars:
                 return False
 
-        return True
-
-    def _forward_check(self) -> bool:
-        self.stats.forward_checks += 1
-        for future_pos in range(self.n):
-            if self.assignment[future_pos] is None:
-                valid_chars = set()
-
-                for char in self.domains[future_pos]:
-                    if (self._find_available_char_index(char) != -1 and
-                            self.validator.is_valid_partial_assignment(self.assignment, future_pos, char)):
-                        valid_chars.add(char)
-
-                if not valid_chars:
-                    return False
-
-                if len(valid_chars) < len(self.domains[future_pos]):
-                    self.domains[future_pos] = valid_chars
-                    self.stats.domain_reductions += 1
-
-        return True
-
-    def _arc_consistency_check(self) -> bool:
-        self.stats.arc_consistency_calls += 1
-        for pos in range(self.n):
-            if self.assignment[pos] is None:
-                valid_chars = set()
-
-                for char in self.domains[pos]:
-                    if (self._find_available_char_index(char) != -1 and
-                            self.validator.is_valid_partial_assignment(self.assignment, pos, char)):
-                        valid_chars.add(char)
-
-                if not valid_chars:
-                    return False
-
-                if len(valid_chars) < len(self.domains[pos]):
-                    self.domains[pos] = valid_chars
-                    self.stats.domain_reductions += 1
+            if len(valid_chars) < len(self.domains[pos]):
+                self.domains[pos] = valid_chars
+                self.stats.domain_reductions += 1
 
         return True
 
@@ -230,8 +192,8 @@ class OptimizedCSPSolver(CSPSolver):
         return -1
 
     def _save_domains(self) -> Dict[int, Set[str]]:
-        return {i: self.domains[i].copy() for i in range(self.n)}
+        return {pos: self.domains[pos].copy() for pos in range(self.n)}
 
     def _restore_domains(self, saved_domains: Dict[int, Set[str]]):
-        for i, domain in saved_domains.items():
-            self.domains[i] = domain.copy()
+        for pos, domain in saved_domains.items():
+            self.domains[pos] = domain.copy()

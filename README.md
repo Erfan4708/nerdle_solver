@@ -1,325 +1,197 @@
+# Nerdle Solver
 
-## 1. Introduction
+A constraint satisfaction solver for the equation puzzle [Nerdle](https://nerdlegame.com/).
+Given a bag of characters, it rearranges them into a valid mathematical equation, and
+compares a plain backtracking search against one that uses the standard CSP heuristics.
 
-This project implements a solution to the mathematical equation puzzle "Nerdle" using **Constraint Satisfaction Problem (CSP)** techniques. The goal is to construct a valid mathematical equation using all given characters exactly once.
+The project was written to explore how much difference variable ordering, value ordering
+and constraint propagation actually make on a concrete problem, so both solvers are kept
+side by side and every run reports how much work each of them did.
 
-### Problem Description
+## Problem
 
-Given a set of characters including:
-- Digits (0-9)
-- Mathematical operators: `+`, `-`, `*`, `/`, `=`
-- Possibly duplicate characters
+The input is a multiset of characters: digits `0`-`9`, the operators `+`, `-`, `*`, `/`,
+and one `=`. The task is to arrange **all** of them into an equation that is:
 
-The task is to arrange these characters to form a valid mathematical equation where:
-1. Each character is used exactly once
-2. The equation is syntactically correct
-3. The equation is mathematically correct (both sides of `=` evaluate to the same value)
-4. Standard mathematical operator precedence is respected
-5. Multi-digit numbers are allowed
-6. There is exactly one `=` symbol
+1. syntactically correct - it starts and ends with a digit, operators are surrounded by
+   digits, and there is exactly one `=`
+2. mathematically correct - both sides evaluate to the same value, respecting operator
+   precedence
+3. built from every input character exactly once
 
-### Example
+Multi-digit numbers are allowed; numbers may not have a leading zero.
 
-**Input:** `['2', '7', '2', '2', '4', '5', '4', '+', '-', '=']`
-
-**Valid Solution:** `"22+54-4=72"`
-
-## 2. CSP Formulation
-
-### 2.1 Variables
-- Each position in the equation string is a variable
-- Variables are indexed from 0 to n-1 (where n is the number of characters)
-
-### 2.2 Domain
-- Each variable can take any value from the given character set
-- Domain reduces as characters are assigned (each character used exactly once)
-
-### 2.3 Constraints
-1. **Uniqueness Constraint**: Each character must be used exactly once
-2. **Syntax Constraints**: 
-   - First and last positions must be digits
-   - No consecutive operators
-   - Operators must be surrounded by digits
-3. **Mathematical Constraint**: The equation must evaluate correctly
-
-## 3. Implementation Architecture
-
-### 3.1 Core Classes
-
-#### `CSPStats`
-Tracks performance metrics:
-- `nodes_expanded`: Number of search nodes explored
-- `backtracks`: Number of backtracking operations
-- `forward_checks`: Number of forward checking operations
-- `arc_consistency_calls`: Number of arc consistency applications
-- `domain_reductions`: Number of domain pruning operations
-- `time_taken`: Total solving time
-- `solution_found`: Whether a solution was found
-
-#### `EquationValidator`
-Validates equations and partial assignments:
-- `is_valid_equation(equation)`: Checks if complete equation is valid
-- `is_valid_partial_assignment(assignment, pos, char)`: Validates partial assignment
-
-#### `CSPSolver` (Abstract Base Class)
-Base class for all solvers with common functionality:
-- State management
-- Domain initialization
-- Abstract solve method
-
-### 3.2 Solver Implementations
-
-#### `BasicBacktrackingSolver`
-Simple backtracking implementation:
-- Sequential variable ordering
-- No heuristics or constraint propagation
-- Baseline for comparison
-
-#### `OptimizedCSPSolver`
-Advanced solver with CSP optimization techniques:
-- MRV (Minimum Remaining Values) heuristic
-- LCV (Least Constraining Value) heuristic
-- Forward Checking
-- Arc Consistency (AC-2)
-- Constraint propagation
-
-## 4. Optimization Techniques
-
-### 4.1 Variable Ordering: MRV (Minimum Remaining Values)
-
-**Purpose:** Select the variable with the smallest domain size first.
-
-**Rationale:** Variables with fewer options are more likely to fail fast, reducing search space.
-
-**Implementation:**
-```python
-def _select_variable(self) -> int:
-    unassigned = [i for i in range(self.n) if self.assignment[i] is None]
-    if not unassigned:
-        return -1
-    
-    # Select variable with minimum valid domain size
-    min_domain_size = float('inf')
-    best_pos = -1
-    
-    for pos in unassigned:
-        domain_size = get_real_domain_size(pos)
-        if domain_size < min_domain_size:
-            min_domain_size = domain_size
-            best_pos = pos
-    
-    return best_pos
-```
-
-### 4.2 Value Ordering: LCV (Least Constraining Value)
-
-**Purpose:** Choose values that leave the most options for other variables.
-
-**Rationale:** Preserve flexibility for future assignments by selecting less constraining values first.
-
-**Implementation:**
-```python
-def _order_domain_values(self, pos: int) -> List[str]:
-    valid_values = []
-    for char in self.domains[pos]:
-        if is_valid_assignment(pos, char):
-            remaining_choices = self._count_remaining_choices(pos, char)
-            valid_values.append((char, remaining_choices))
-    
-    # Sort by most remaining choices first
-    valid_values.sort(key=lambda x: x[1], reverse=True)
-    return [char for char, _ in valid_values]
-```
-
-### 4.3 Forward Checking
-
-**Purpose:** After assigning a value, check if it makes future assignments impossible.
-
-**Process:**
-1. Assign value to variable
-2. Update domains of unassigned variables
-3. Remove values that would create conflicts
-4. If any domain becomes empty, backtrack immediately
-
-**Implementation:**
-```python
-def _forward_check(self, pos: int) -> bool:
-    for future_pos in range(self.n):
-        if self.assignment[future_pos] is None:
-            valid_chars = set()
-            
-            for char in self.domains[future_pos]:
-                if is_valid_for_position(future_pos, char):
-                    valid_chars.add(char)
-            
-            if not valid_chars:
-                return False  # Domain wipeout
-            
-            self.domains[future_pos] = valid_chars
-    
-    return True
-```
-
-### 4.4 Arc Consistency (AC-2)
-
-**Purpose:** Ensure that for every value in a variable's domain, there exists a compatible value in related variables' domains.
-
-**When Applied:**
-1. As preprocessing before search
-2. After each assignment during search
-
-**Implementation:**
-```python
-def _arc_consistency_check(self) -> bool:
-    for pos in range(self.n):
-        if self.assignment[pos] is None:
-            valid_chars = set()
-            
-            for char in self.domains[pos]:
-                if is_valid_and_supported(pos, char):
-                    valid_chars.add(char)
-            
-            if not valid_chars:
-                return False
-            
-            self.domains[pos] = valid_chars
-    
-    return True
-```
-
-## 5. Algorithm Flow
-
-### 5.1 Basic Backtracking Algorithm
+**Example**
 
 ```
-1. If all variables assigned:
-   - Check if equation is valid
-   - Return solution if valid
-2. Select next variable (position)
-3. For each character in domain:
-   - If assignment is valid:
-     - Assign character
-     - Recursively solve
-     - If solution found, return it
-     - Otherwise, backtrack
-4. Return failure
+Input:  ['2', '7', '2', '2', '4', '5', '4', '+', '-', '=']
+Output: 27+22-45=4
 ```
 
-### 5.2 Optimized Algorithm
+## Features
+
+- Two interchangeable solvers behind a shared base class
+  - `BasicBacktrackingSolver` - left-to-right backtracking with no heuristics, used as
+    the baseline
+  - `OptimizedCSPSolver` - adds MRV, LCV, constraint propagation and a preprocessing pass
+- Per-solver statistics: nodes expanded, backtracks, propagation passes, domain
+  reductions, time taken
+- Each optimization can be switched off individually (`use_mrv`, `use_lcv`,
+  `use_forward_checking`, `use_ac2`) to see what it contributes
+- A timeout, so a hard instance ends in a reported timeout instead of hanging
+- A benchmark runner that prints both solvers side by side as a table
+
+## Tech Stack
+
+- Python 3.7+ (standard library: `abc`, `dataclasses`, `typing`, `time`)
+- [tabulate](https://pypi.org/project/tabulate/) for the comparison tables
+
+No other dependencies, no configuration files and no external services.
+
+## Project Structure
 
 ```
-1. Preprocessing:
-   - Apply initial constraint propagation
-   - Reduce domains based on position constraints
-2. Search:
-   - If all variables assigned, validate equation
-   - Select variable using MRV heuristic
-   - Order values using LCV heuristic
-   - For each value:
-     - If assignment is valid:
-       - Assign value
-       - Apply forward checking
-       - Apply arc consistency
-       - If domains remain consistent:
-         - Recursively solve
-       - Backtrack if needed
-3. Return solution or failure
+main.py                        Entry point: runs the sample inputs through the benchmark
+requirements.txt               The single dependency
+solver/
+  BaseCSPSolver.py             CSPSolver base class and the CSPStats dataclass
+  EquationValidator.py         Syntax checks and the arithmetic evaluator
+  BasicBacktrackingSolver.py   Baseline search
+  OptimizedCSPSolver.py        Search with MRV, LCV and constraint propagation
+  NerdleCSPBenchmark.py        Runs both solvers and prints the comparison
 ```
 
-## 6. Performance Analysis
+## Getting Started
 
-### 6.1 Key Metrics
+**Prerequisites:** Python 3.7 or newer.
 
-1. **Time Complexity:** 
-   - Basic: O(n! × validation_cost)
-   - Optimized: Significantly reduced through pruning
+```bash
+git clone https://github.com/Erfan4708/nerdle_solver.git
+cd nerdle_solver
 
-2. **Space Complexity:** O(n × domain_size)
+python -m venv venv
+source venv/bin/activate        # Windows: venv\Scripts\activate
 
-3. **Practical Performance:**
-   - Measured by nodes expanded
-   - Backtracking operations
-   - Domain reduction effectiveness
+pip install -r requirements.txt
+```
 
-### 6.2 Expected Improvements
+Run the demo:
 
-The optimized solver should show:
-- Fewer nodes expanded (due to better variable/value ordering)
-- More efficient pruning (forward checking + arc consistency)
-- Faster time to solution or failure detection
-- Better scaling with problem size
+```bash
+python main.py
+```
 
-## 7. Usage Example
+It solves the sample inputs listed in `main.py` and prints a table per input. The whole
+run takes a couple of seconds.
+
+## Usage
+
+To solve a single input directly:
 
 ```python
-# Initialize solvers
-basic_solver = BasicBacktrackingSolver(chars)
-optimized_solver = OptimizedCSPSolver(chars)
+from solver.OptimizedCSPSolver import OptimizedCSPSolver
 
-# Solve with timeout
-solution1 = basic_solver.solve(timeout=30)
-solution2 = optimized_solver.solve(timeout=30)
+solver = OptimizedCSPSolver(list("2722454+-="))
+solution = solver.solve(timeout=30)     # '24+25-47=2', or None
 
-# Compare performance
-basic_stats = basic_solver.get_stats()
-optimized_stats = optimized_solver.get_stats()
-
-print(f"Basic solver: {basic_stats.time_taken:.4f}s, {basic_stats.nodes_expanded} nodes")
-print(f"Optimized solver: {optimized_stats.time_taken:.4f}s, {optimized_stats.nodes_expanded} nodes")
+stats = solver.get_stats()
+print(solution, stats.nodes_expanded, stats.time_taken)
 ```
 
-## 8. Test Cases
+`solve()` returns the first equation it finds, or `None` if the input has no solution or
+the timeout ran out (`solver.timed_out` tells the two apart). A solver instance can be
+reused; `solve()` resets its state each time.
 
-### 8.1 Simple Case
-**Input:** `['2', '7', '2', '2', '4', '5', '4', '+', '-', '=']`  
-**Expected:** `"22+54-4=72"` or equivalent
+To compare both solvers on one input:
 
-### 8.2 Complex Case
-**Input:** `['0', '2', '3', '2', '3', '4', '1', '0', '6', '9', '3', '*', '/', '*', '+', '=']`  
-**Expected:** `"24/2*33=30*10+96"` or equivalent
+```python
+from solver.NerdleCSPBenchmark import NerdleCSPBenchmark
 
-### 8.3 Edge Cases
-- Minimal equation: `['1', '=', '1']`
-- No solution cases
-- Multiple valid solutions
+benchmark = NerdleCSPBenchmark()
+benchmark.print_table_report(benchmark.run_comparison(list("2722454+-=")))
+```
 
-## 9. Implementation Notes
+## Configuration
 
-### 9.1 Key Design Decisions
+There are no environment variables or secrets. The things worth changing live in the code:
 
-1. **Validation Strategy:** Separate validator class for modularity
-2. **Domain Representation:** Sets for efficient membership testing
-3. **State Management:** Explicit backup/restore for backtracking
-4. **Timeout Handling:** Prevents infinite loops on hard instances
+- `TIMEOUT_SECONDS` and `SAMPLE_INPUTS` in `main.py`
+- `DEFAULT_TIMEOUT` in `solver/NerdleCSPBenchmark.py`
+- the `use_mrv` / `use_lcv` / `use_forward_checking` / `use_ac2` flags on
+  `OptimizedCSPSolver`
 
-### 9.2 Performance Optimizations
+## How It Works
 
-1. **Efficient Domain Operations:** Use sets for O(1) lookup
-2. **Lazy Evaluation:** Only compute necessary constraint checks
-3. **Early Termination:** Stop as soon as solution is found
-4. **Memory Management:** Reuse data structures where possible
+### CSP formulation
 
-## 10. Limitations and Future Work
+- **Variables** - one per position in the equation, `0` to `n-1`
+- **Domains** - the set of input characters, narrowed as the search proceeds
+- **Constraints**
+  - each input character is used exactly once, tracked by the `available` list, so
+    duplicates in the input stay usable the right number of times
+  - the first and last positions are digits, and no two operators are adjacent
+  - the finished string must evaluate to a true equation
 
-### 10.1 Current Limitations
+The syntax constraints are local, involving only a position and its neighbours, so they
+can be checked cheaply on every candidate value. The arithmetic constraint involves every
+variable at once, so it is only checked on a complete assignment.
 
-1. **Division by Zero:** Not explicitly handled in validation
-2. **Floating Point Precision:** Limited to 1e-10 tolerance
-3. **Memory Usage:** Could be optimized for very large instances
+### Optimizations
 
-### 10.2 Future Improvements
+- **MRV (minimum remaining values)** - fill the position with the fewest candidates first,
+  so dead ends surface early.
+- **LCV (least constraining value)** - try the character that leaves the most options open
+  for the remaining positions first.
+- **Constraint propagation** - after each assignment, drop the values that no longer fit
+  from the unassigned domains; if a domain empties, backtrack immediately.
+- **Preprocessing** - before the search starts, remove non-digits from the first and last
+  position.
 
-1. **Better Heuristics:** Domain-specific variable/value ordering
-2. **Constraint Learning:** Remember and reuse conflict information
-3. **Parallel Search:** Explore multiple branches simultaneously
-4. **Preprocessing:** More sophisticated initial constraint propagation
+Forward checking and arc consistency were originally written as two separate passes, but
+in this model they do the same thing: every constraint links a position to its neighbours
+only, so once the values that no longer fit have been removed the remaining domains are
+already arc consistent, and a second pass can never remove anything. They now share one
+implementation (`_prune_domains`) that runs once per assignment, and arc consistency does
+its distinct work in the preprocessing pass. The `use_forward_checking` and `use_ac2`
+flags still select between them.
 
-## 11. Conclusion
+### What the comparison shows
 
-This implementation demonstrates the power of CSP techniques for solving combinatorial problems. The optimized solver should significantly outperform the basic backtracking approach by:
+On the sample inputs the optimized solver explores far fewer nodes - roughly 10x fewer on
+the shuffled 10-character input, and about 38x fewer when proving that an input has no
+solution at all - but it is often **slower in wall-clock time**, because MRV and LCV
+recompute the candidate sets for every unassigned position at every node. The pruning is
+real; the per-node bookkeeping is what eats the gain. On larger inputs that cost grows
+faster than the saving, and the optimized solver can time out where the baseline does not.
 
-- Reducing search space through intelligent variable/value ordering
-- Detecting failures early through constraint propagation
-- Maintaining consistency through forward checking and arc consistency
+Two caveats worth knowing when reading the numbers:
 
-The modular design allows for easy experimentation with different optimization techniques and provides a solid foundation for further research in constraint satisfaction.
+- Most sample inputs are written as an already valid equation with its characters in
+  order. The baseline fills positions left to right in input order, so it stumbles onto
+  the answer almost immediately on those. The shuffled input and the unsolvable ones are
+  the more honest comparisons.
+- Node counts used to vary between runs, because iteration order over a set of strings
+  differs per process. Candidate values are sorted before ordering now, so runs are
+  reproducible.
+
+## Testing
+
+There is no automated test suite. The solvers are exercised through `python main.py`,
+which includes solvable inputs of several sizes and three inputs with no valid equation,
+so the search has to fail exhaustively.
+
+## Limitations and Possible Improvements
+
+- Division is floating point, and the two sides are compared with a `1e-10` tolerance.
+  Real Nerdle requires every intermediate result to be a whole number; this solver does
+  not enforce that.
+- Only the first solution is returned. There is no way to enumerate all of them.
+- The `=` is treated as just another symbol during the search. Restricting how many `=`
+  signs may be placed while assigning, rather than only checking it at the end, would
+  prune a lot.
+- The arithmetic constraint is only checked on a complete assignment. Reasoning about a
+  partial equation, for example bounding what the remaining characters could still
+  produce, would cut the search far more than the syntax rules do.
+- MRV and LCV recompute candidate sets from scratch at every node. Maintaining them
+  incrementally is the obvious fix for the wall-clock gap described above.
+- A real test suite, starting with the equation validator, would be the first thing to add.

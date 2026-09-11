@@ -5,12 +5,14 @@ from solver.BaseCSPSolver import CSPSolver
 
 
 class BasicBacktrackingSolver(CSPSolver):
+    """Plain backtracking: fill the positions left to right, in input character order.
 
-    def solve(self, timeout: float = None) -> Optional[str]:
-        self.reset_state()
-        self.start_time = time.time()
-        self.timeout = timeout
-        self.timed_out = False
+    It is the baseline the optimized solver is measured against, so it deliberately
+    uses no heuristics and no constraint propagation.
+    """
+
+    def solve(self, timeout: Optional[float] = None) -> Optional[str]:
+        self._start_solve(timeout)
 
         result = self._backtrack(0)
 
@@ -20,33 +22,32 @@ class BasicBacktrackingSolver(CSPSolver):
         return result
 
     def _backtrack(self, pos: int) -> Optional[str]:
-        if self.timeout and (time.time() - self.start_time > self.timeout):
-            self.timed_out = True
+        if self._is_timed_out():
             return None
 
         self.stats.nodes_expanded += 1
 
         if pos == self.n:
-            equation = ''.join([c for c in self.assignment if c is not None])
-            if self.validator.is_valid_equation(equation):
-                return equation
-            return None
+            equation = ''.join(self.assignment)
+            return equation if self.validator.is_valid_equation(equation) else None
 
         for i in range(self.n):
-            if self.available[i]:
-                char = self.chars[i]
+            if not self.available[i]:
+                continue
 
-                if self.validator.is_valid_partial_assignment(self.assignment, pos, char):
-                    self.assignment[pos] = char
-                    self.available[i] = False
+            char = self.chars[i]
+            if not self.validator.is_valid_partial_assignment(self.assignment, pos, char):
+                continue
 
-                    result = self._backtrack(pos + 1)
-                    if result:
-                        return result
+            self.assignment[pos] = char
+            self.available[i] = False
 
-                    self.stats.backtracks += 1
-                    self.assignment[pos] = None
-                    self.available[i] = True
+            result = self._backtrack(pos + 1)
+            if result:
+                return result
+
+            self.stats.backtracks += 1
+            self.assignment[pos] = None
+            self.available[i] = True
 
         return None
-
